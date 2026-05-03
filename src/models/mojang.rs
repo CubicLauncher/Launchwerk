@@ -148,6 +148,16 @@ pub struct VersionManifest {
     java_version: JavaVersion,
 }
 
+impl VersionManifest {
+    pub fn from_bytes(bytes: &[u8]) -> Option<VersionManifest> {
+        let version_m: Option<VersionManifest> = match serde_json::from_slice(bytes) {
+            Ok(d) => Some(d),
+            Err(_) => None,
+        };
+        version_m
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
