@@ -1,6 +1,9 @@
 use crate::models::{MCVersion, deserialize_version};
 use serde::Deserialize;
-use std::env::consts::{ARCH, OS};
+use std::{
+    env::consts::{ARCH, OS},
+    path::PathBuf,
+};
 
 trait Evaluable {
     fn rules(&self) -> Option<&Vec<Rule>>;
@@ -27,7 +30,7 @@ struct OsRule {
 }
 
 #[derive(Deserialize, Debug)]
-struct Rule {
+pub struct Rule {
     action: RuleAction,
     os: Option<OsRule>,
 }
@@ -60,14 +63,14 @@ impl Rule {
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
-enum ArgumentValue {
+pub enum ArgumentValue {
     Single(String),
     Many(Vec<String>),
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
-enum Argument {
+pub enum Argument {
     WithRule {
         rules: Vec<Rule>,
         value: ArgumentValue,
@@ -105,9 +108,9 @@ impl Evaluable for Argument {
 }
 
 #[derive(Deserialize, Debug)]
-struct Library {
-    name: String,
-    rules: Option<Vec<Rule>>,
+pub struct Library {
+    pub name: String,
+    pub rules: Option<Vec<Rule>>,
 }
 
 impl Evaluable for Library {
@@ -118,43 +121,78 @@ impl Evaluable for Library {
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct JavaVersion {
-    component: String,
-    major_version: u8,
+pub struct JavaVersion {
+    pub component: String,
+    pub major_version: u8,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct AssetIndex {
+pub struct AssetIndex {
     id: String,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct VersionArgType {
-    game: Option<Vec<Argument>>,
-    jvm: Option<Vec<Argument>>,
+pub struct VersionArgType {
+    pub game: Option<Vec<Argument>>,
+    pub jvm: Option<Vec<Argument>>,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionManifest {
     #[serde(deserialize_with = "deserialize_version")]
-    id: MCVersion,
-    main_class: String,
-    arguments: VersionArgType,
-    libraries: Vec<Library>,
-    asset_index: AssetIndex,
-    java_version: JavaVersion,
+    pub id: MCVersion,
+    pub main_class: String,
+    pub arguments: VersionArgType,
+    pub libraries: Vec<Library>,
+    pub asset_index: AssetIndex,
+    pub java_version: JavaVersion,
 }
 
 impl VersionManifest {
     pub fn from_bytes(bytes: &[u8]) -> Option<VersionManifest> {
-        let version_m: Option<VersionManifest> = match serde_json::from_slice(bytes) {
-            Ok(d) => Some(d),
-            Err(_) => None,
-        };
+        let version_m: Option<VersionManifest> = serde_json::from_slice(bytes).ok();
         version_m
+    }
+
+    pub fn get_classpath(&self, lib_path: PathBuf) -> String {
+        let paths: Vec<String> = self
+            .libraries
+            .iter()
+            .filter(|lib| lib.evaluate())
+            .map(|lib| lib_path.join(lib.get_path()).to_string_lossy().to_string())
+            .collect();
+
+        #[cfg(target_os = "windows")]
+        let claspath = paths.join(";");
+        #[cfg(not(target_os = "windows"))]
+        let classpath = paths.join(":");
+        classpath
+    }
+}
+
+impl Library {
+    pub fn get_path(&self) -> PathBuf {
+        let parts = self.name.split(':').collect::<Vec<&str>>();
+        let classifier = parts.get(3);
+        match classifier {
+            Some(classifier) => {
+                return PathBuf::new()
+                    .join(parts[0].replace('.', "/"))
+                    .join(parts[1])
+                    .join(parts[2])
+                    .join(format!("{}-{}-{}.jar", parts[1], parts[2], classifier));
+            }
+            None => {
+                return PathBuf::new()
+                    .join(parts[0].replace('.', "/"))
+                    .join(parts[1])
+                    .join(parts[2])
+                    .join(format!("{}-{}.jar", parts[1], parts[2]));
+            }
+        };
     }
 }
 
