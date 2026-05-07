@@ -26,7 +26,6 @@ use uuid::Uuid;
 /// # }
 /// ```
 pub struct Launchwerk {
-    /// Root shared directory – expected layout:
     ///   `<shared_dir>/libraries/`
     ///   `<shared_dir>/assets/`
     ///   `<shared_dir>/versions/<id>/<id>.jar`
@@ -35,7 +34,6 @@ pub struct Launchwerk {
 }
 
 impl Launchwerk {
-    /// Create a new `Launchwerk` with the given shared directory.
     pub fn new(shared_dir: PathBuf) -> Self {
         Self {
             shared_dir,
@@ -43,24 +41,13 @@ impl Launchwerk {
         }
     }
 
-    /// Prepare a new instance. Returns an `InstanceHandle` that you can
-    /// `.launch().await` when ready.
-    ///
-    /// * `manifest` – fully parsed `VersionManifest` (use `VersionManifest::from_file`).
-    /// * `config`   – player name, Java path, RAM, resolution, etc.
-    /// * `instance_dir` – per-instance directory (saves, mods, config).
     pub fn prepare(
         &self,
         manifest: VersionManifest,
         config: LaunchConfig,
         instance_dir: PathBuf,
     ) -> InstanceHandle {
-        let handle = InstanceHandle::new(
-            manifest,
-            config,
-            self.shared_dir.clone(),
-            instance_dir,
-        );
+        let handle = InstanceHandle::new(manifest, config, self.shared_dir.clone(), instance_dir);
 
         self.instances
             .insert(handle.id(), Arc::clone(&handle.inner));
@@ -68,9 +55,6 @@ impl Launchwerk {
         handle
     }
 
-    /// Retrieve an existing instance by UUID.
-    /// Returns a fresh `InstanceHandle` (new broadcast receivers) backed by
-    /// the same inner state, so you can watch output from a different task.
     pub fn get(&self, id: Uuid) -> Option<InstanceHandle> {
         self.instances.get(&id).map(|inner| InstanceHandle {
             stdout: inner.stdout_tx.subscribe(),
@@ -79,13 +63,10 @@ impl Launchwerk {
         })
     }
 
-    /// Remove an instance record from the registry.
-    /// Does NOT kill a running process – call `handle.kill().await` first if needed.
     pub fn remove(&self, id: Uuid) {
         self.instances.remove(&id);
     }
 
-    /// Number of tracked instances.
     pub fn instance_count(&self) -> usize {
         self.instances.len()
     }

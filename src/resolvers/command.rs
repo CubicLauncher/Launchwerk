@@ -35,7 +35,6 @@ impl<'a> CommandBuilder<'a> {
         let lib_dir = self.shared_dir.join("libraries");
         let classpath = ClasspathResolver::new(self.manifest, None, &lib_dir).build();
 
-        // 1. Java binary
         let java_path = &self.config.java_path;
         if !java_path.exists() {
             return Err(Error::MissingFile(format!(
@@ -50,7 +49,6 @@ impl<'a> CommandBuilder<'a> {
             )));
         }
 
-        // 2. Classpath entries
         let separator = if cfg!(windows) { ';' } else { ':' };
         let mut missing_files = Vec::new();
         for entry in classpath.split(separator) {
@@ -67,7 +65,6 @@ impl<'a> CommandBuilder<'a> {
             return Err(Error::MissingFile(msg));
         }
 
-        // 3. Version JAR
         let version_jar = self
             .shared_dir
             .join("versions")
@@ -80,7 +77,6 @@ impl<'a> CommandBuilder<'a> {
             )));
         }
 
-        // 4. Verificar directorio de instancia
         if !self.instance_dir.exists() {
             return Err(Error::MissingFile(format!(
                 "Instance directory does not exist: {}",
@@ -88,10 +84,8 @@ impl<'a> CommandBuilder<'a> {
             )));
         }
 
-        // 5. Verificar directorio de nativos (debe crearse ANTES de pasar -Djava.library.path)
         let natives_dir = self.shared_dir.join("natives").join(&self.manifest.id_raw);
         if !natives_dir.exists() {
-            // Crear el directorio si no existe (aunque extract_natives debería hacerlo)
             std::fs::create_dir_all(&natives_dir)?;
         }
 
@@ -140,8 +134,6 @@ impl<'a> CommandBuilder<'a> {
         Ok(cmd)
     }
 
-    // ── JVM flags ─────────────────────────────────────────────────────────────
-
     fn add_jvm_flags(
         &self,
         cmd: &mut Vec<String>,
@@ -163,10 +155,6 @@ impl<'a> CommandBuilder<'a> {
         cmd.push(format!("-Xms{}", self.config.min_ram));
         cmd.push(format!("-Xmx{}", self.config.max_ram));
 
-        // JVM args from manifest.
-        // The manifest often contains ["-cp", "${classpath}"] as a pair – we
-        // handle classpath ourselves, so skip the whole pair, not just each
-        // token individually.
         if let Some(args) = self
             .manifest
             .arguments
@@ -177,8 +165,6 @@ impl<'a> CommandBuilder<'a> {
             for arg in args {
                 let tokens = arg.get_if_applies();
 
-                // If the resolved token list contains -cp or ${classpath},
-                // skip every token in this argument entry entirely.
                 let has_cp = tokens
                     .iter()
                     .any(|t| t == "-cp" || t.contains("${classpath}"));
@@ -191,14 +177,12 @@ impl<'a> CommandBuilder<'a> {
                         skip_next = false;
                         continue;
                     }
-                    // Also guard against a plain "-cp" token appearing alone.
                     if s == "-cp" {
-                        skip_next = true; // skip the value that follows too
+                        skip_next = true;
                         continue;
                     }
                     let s = replace_vars(&s, vars);
-                    // After var substitution the classpath might now be a real
-                    // path string – still skip it; we add it ourselves.
+
                     if s == "-cp" || s.contains("${classpath}") {
                         continue;
                     }
@@ -210,10 +194,7 @@ impl<'a> CommandBuilder<'a> {
         }
     }
 
-    // ── Game arguments ────────────────────────────────────────────────────────
-
     fn add_game_args(&self, cmd: &mut Vec<String>, vars: &HashMap<String, String>) {
-        // Modern JSON arguments
         if let Some(args) = self
             .manifest
             .arguments
@@ -221,7 +202,6 @@ impl<'a> CommandBuilder<'a> {
             .and_then(|a| a.game.as_ref())
         {
             for arg in args {
-                // Skip demo / quickplay if not configured
                 if let Argument::Plain(s) = arg {
                     if self.should_skip_arg(s) {
                         continue;
@@ -236,7 +216,6 @@ impl<'a> CommandBuilder<'a> {
             return;
         }
 
-        // Legacy minecraftArguments string (pre-1.13)
         if let Some(legacy) = &self.manifest.minecraft_arguments {
             for token in legacy.split_whitespace() {
                 cmd.push(replace_vars(token, vars));
@@ -353,7 +332,6 @@ impl<'a> CommandBuilder<'a> {
         for (i, arg) in cmd.iter().enumerate() {
             if arg.contains("${") {
                 remove.push(i);
-                // If the preceding arg was a --flag, remove it too.
                 if i > 0 && cmd[i - 1].starts_with("--") && !cmd[i - 1].contains("${") {
                     remove.push(i - 1);
                 }

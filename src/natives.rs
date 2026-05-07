@@ -22,13 +22,10 @@ pub fn extract_natives(
         if !lib.should_include() {
             continue;
         }
-        // Obtener el artifact nativo (puede ser None si no es nativa)
         let native_artifact = match lib.native_artifact() {
             Some(art) => art,
             None => {
-                // Si no tiene artifact nativo explícito, seguir con el antiguo método is_native
                 if lib.is_native() {
-                    // Usar el artifact principal (caso legacy)
                     let jar_path = lib_dir.join(lib.get_path());
                     if jar_path.exists() {
                         extract_jar(&jar_path, natives_dir)?;
@@ -66,12 +63,10 @@ fn extract_jar(jar_path: &Path, dest_dir: &Path) -> Result<(), Error> {
 
         let name = entry.name().to_string();
 
-        // Only extract native library files; skip META-INF and other resources.
         if !is_native_file(&name) {
             continue;
         }
 
-        // Use only the filename, not any subdirectory inside the JAR.
         let file_name = Path::new(&name)
             .file_name()
             .unwrap_or_default()
@@ -84,7 +79,6 @@ fn extract_jar(jar_path: &Path, dest_dir: &Path) -> Result<(), Error> {
 
         let out_path = dest_dir.join(&file_name);
 
-        // Skip if already extracted (size match is a quick sanity check).
         if out_path.exists() && out_path.metadata().map(|m| m.len()).unwrap_or(0) == entry.size() {
             debug!("Native already extracted: {file_name}");
             continue;
@@ -101,7 +95,6 @@ fn extract_jar(jar_path: &Path, dest_dir: &Path) -> Result<(), Error> {
 
 fn is_native_file(name: &str) -> bool {
     let lower = name.to_lowercase();
-    // Skip META-INF, directories (end with /)
     if lower.starts_with("meta-inf") || lower.ends_with('/') {
         return false;
     }
@@ -113,8 +106,6 @@ fn is_native_file(name: &str) -> bool {
         || lower.contains(".so.")
 }
 
-/// Collect the paths of all native JARs for this manifest.
-/// Useful for logging / verification.
 pub fn list_native_jars(manifest: &VersionManifest, lib_dir: &Path) -> Vec<PathBuf> {
     manifest
         .libraries
