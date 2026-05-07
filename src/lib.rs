@@ -37,3 +37,9 @@ pub use launchwerk::Launchwerk;
 pub use natives::extract_natives;
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(feature = "auth")]
+pub mod auth;
+
+#[cfg(feature = "auth")]
+pub use auth::MinecraftUser;

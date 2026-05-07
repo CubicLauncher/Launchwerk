@@ -34,4 +34,9 @@ pub enum Error {
     // Opcional: para múltiples archivos
     #[error("Missing required files:\n{0}")]
     MissingFiles(String),
+
+    // src/error.rs
+    #[cfg(feature = "auth")]
+    #[error("Auth error: {0}")]
+    Auth(String),
 }
