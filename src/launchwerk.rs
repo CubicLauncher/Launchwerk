@@ -1,7 +1,6 @@
 // Copyright (C) 2025 Santiagolxx, CubicLauncher contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::error::Error;
 use crate::handle::{InstanceHandle, InstanceInner};
 use crate::launch_config::LaunchConfig;
 use crate::models::VersionManifest;

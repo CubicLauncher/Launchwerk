@@ -35,8 +35,10 @@ pub enum Error {
     #[error("Missing required files:\n{0}")]
     MissingFiles(String),
 
-    // src/error.rs
     #[cfg(feature = "auth")]
     #[error("Auth error: {0}")]
     AuthError(String),
+    #[cfg(feature = "auth")]
+    #[error("HTTP request error: {0}")]
+    Reqwest(#[from] reqwest::Error),
 }
