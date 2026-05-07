@@ -38,5 +38,5 @@ pub enum Error {
     // src/error.rs
     #[cfg(feature = "auth")]
     #[error("Auth error: {0}")]
-    Auth(String),
+    AuthError(String),
 }
