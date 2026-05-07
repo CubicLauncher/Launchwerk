@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // Uso:
-//   BASE_DIR=/home/user/.cubic VERSION=1.21.4 JAVA=/usr/bin/java cargo run --example launch
+//   BASE_DIR=/home/user/.cubic VERSION=fabric-loader-0.19.2-1.20.1 JAVA=/usr/bin/java cargo run --example launch
 
 use launchwerk::models::VersionManifest;
 use launchwerk::{LaunchConfig, Launchwerk};
@@ -16,7 +16,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter_level(log::LevelFilter::Info)
         .init();
 
-    // ── Configuración desde variables de entorno ──────────────────────────
     let base_dir = env::var("BASE_DIR").unwrap_or_else(|_| "/home/santiagolxx/.cubic/".to_string());
     let version = env::var("VERSION").unwrap_or_else(|_| "26.2-snapshot-6".to_string());
     let java_path =
@@ -38,19 +37,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  username:     {username}");
     println!();
 
-    // ── Cargar manifest ───────────────────────────────────────────────────
-    let manifest = VersionManifest::from_file(&version_json).unwrap_or_else(|e| {
-        eprintln!("Error leyendo {}: {e}", version_json.display());
-        std::process::exit(1);
-    });
-
+    let manifest = VersionManifest::from_file(&version_json)?;
     println!(
         "Manifest cargado: {} (Java {})",
         manifest.id,
         manifest.java_major_version()
     );
 
-    // ── Configurar launch ─────────────────────────────────────────────────
     let config = LaunchConfig::builder()
         .java_path(&java_path)
         .username(&username)
@@ -58,27 +51,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .resolution(854, 480)
         .cracked(true)
         .build();
-    // DEBUG: imprimir classpath
-    use launchwerk::resolvers::ClasspathResolver;
-    let lib_dir = PathBuf::from(&base_dir).join("shared").join("libraries");
-    let cp = ClasspathResolver::new(&manifest, None, &lib_dir).build();
-    println!("=== CLASSPATH ===");
-    for entry in cp.split(':') {
-        println!("  {entry}");
-    }
-    println!("=== FIN CLASSPATH ===");
-    // ── Preparar instancia ────────────────────────────────────────────────
+
     let lw = Launchwerk::new(shared_dir);
     let handle = lw.prepare(manifest, config, instance_dir);
 
     println!("Instancia preparada: {}", handle.id());
     println!("Loader: {}", handle.loader());
 
-    // ── Suscribirse a stdout/stderr antes de lanzar ───────────────────────
     let mut stdout_rx = handle.subscribe_stdout();
     let mut stderr_rx = handle.subscribe_stderr();
 
-    // Task que imprime stdout del juego
     tokio::spawn(async move {
         loop {
             match stdout_rx.recv().await {
@@ -89,7 +71,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Task que imprime stderr del juego
     tokio::spawn(async move {
         loop {
             match stderr_rx.recv().await {
@@ -100,7 +81,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // ── Lanzar y esperar ──────────────────────────────────────────────────
     handle.launch().await?;
     println!("Juego lanzado, esperando...");
 

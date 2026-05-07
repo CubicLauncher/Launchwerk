@@ -15,21 +15,17 @@ use std::{
 trait Evaluable {
     fn rules(&self) -> Option<&Vec<Rule>>;
 
-    /// Evalúa las reglas según la especificación de Mojang:
-    /// - Se iteran las reglas en orden.
-    /// - La primera regla cuya condición se cumple determina la acción.
-    /// - Si ninguna regla coincide, se **excluye** (false).
     fn evaluate(&self) -> bool {
         let rules = match self.rules() {
             Some(r) => r,
-            None => return true, // sin reglas → permitido
+            None => return true,
         };
         for rule in rules {
             if let Some(action) = rule.action_if_matches() {
                 return matches!(action, RuleAction::Allow);
             }
         }
-        false // ninguna regla coincide → excluido
+        false
     }
 }
 
@@ -281,19 +277,18 @@ pub struct VersionArgType {
     pub jvm: Option<Vec<Argument>>,
 }
 
-// ─── VersionManifest ─────────────────────────────────────────────────────────
+// ─── VersionManifest (opcional para herencia) ────────────────────────────────
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionManifest {
     pub id: MCVersion,
-    #[serde(rename = "id")]
     pub id_raw: String,
-    pub main_class: String,
+    pub main_class: Option<String>,
     pub arguments: Option<VersionArgType>,
     pub minecraft_arguments: Option<String>,
-    pub libraries: Vec<Library>,
-    pub asset_index: AssetIndex,
+    pub libraries: Option<Vec<Library>>,
+    pub asset_index: Option<AssetIndex>,
     pub java_version: Option<JavaVersion>,
     pub inherits_from: Option<String>,
 }
@@ -307,11 +302,11 @@ impl VersionManifest {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Inner {
-            main_class: String,
+            main_class: Option<String>,
             arguments: Option<VersionArgType>,
             minecraft_arguments: Option<String>,
-            libraries: Vec<Library>,
-            asset_index: AssetIndex,
+            libraries: Option<Vec<Library>>,
+            asset_index: Option<AssetIndex>,
             java_version: Option<JavaVersion>,
             inherits_from: Option<String>,
         }
@@ -335,9 +330,35 @@ impl VersionManifest {
         Self::from_bytes(&bytes)
     }
 
+    /// Combina este manifiesto con el padre (el hijo tiene prioridad)
+    pub fn resolve(&self, parent: &VersionManifest) -> VersionManifest {
+        VersionManifest {
+            id: self.id,
+            id_raw: self.id_raw.clone(),
+            main_class: self.main_class.clone().or(parent.main_class.clone()),
+            arguments: self.arguments.clone().or(parent.arguments.clone()),
+            minecraft_arguments: self
+                .minecraft_arguments
+                .clone()
+                .or(parent.minecraft_arguments.clone()),
+            libraries: {
+                let mut libs = parent.libraries.clone().unwrap_or_default();
+                if let Some(child_libs) = &self.libraries {
+                    libs.extend(child_libs.clone());
+                }
+                Some(libs)
+            },
+            asset_index: self.asset_index.clone().or(parent.asset_index.clone()),
+            java_version: self.java_version.clone().or(parent.java_version.clone()),
+            inherits_from: parent.inherits_from.clone(),
+        }
+    }
+
+    /// Helper para obtener classpath (ya resuelto)
     pub fn get_classpath(&self, lib_dir: &Path) -> String {
-        let paths: Vec<String> = self
-            .libraries
+        let vec = vec![];
+        let libs = self.libraries.as_ref().unwrap_or(&vec);
+        let paths: Vec<String> = libs
             .iter()
             .filter(|lib| lib.should_include() && !lib.is_native())
             .map(|lib| lib_dir.join(lib.get_path()).to_string_lossy().to_string())

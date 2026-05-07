@@ -97,7 +97,11 @@ impl InstanceHandle {
         )
         .build()?;
 
-        debug!("Launching instance {} with {} args", inner.uuid, cmd_args.len());
+        debug!(
+            "Launching instance {} with {} args",
+            inner.uuid,
+            cmd_args.len()
+        );
         for (i, arg) in cmd_args.iter().enumerate() {
             debug!("  [{i}] {arg}");
         }
@@ -117,7 +121,7 @@ impl InstanceHandle {
         for (k, v) in &config.env {
             cmd.env(k, v);
         }
-
+        eprintln!("{:#?}", cmd);
         let mut child = cmd.spawn()?;
 
         // ── Pump stdout ───────────────────────────────────────────────────

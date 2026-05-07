@@ -8,19 +8,15 @@ use std::path::{Path, PathBuf};
 
 pub struct ClasspathResolver<'a> {
     manifest: &'a VersionManifest,
-    parent: Option<&'a VersionManifest>,
+    base_id: &'a str,
     lib_dir: PathBuf,
 }
 
 impl<'a> ClasspathResolver<'a> {
-    pub fn new(
-        manifest: &'a VersionManifest,
-        parent: Option<&'a VersionManifest>,
-        lib_dir: &Path,
-    ) -> Self {
+    pub fn new(manifest: &'a VersionManifest, base_id: &'a str, lib_dir: &Path) -> Self {
         Self {
             manifest,
-            parent,
+            base_id,
             lib_dir: lib_dir.to_path_buf(),
         }
     }
@@ -29,12 +25,7 @@ impl<'a> ClasspathResolver<'a> {
         let mut paths: Vec<String> = Vec::new();
         let mut seen: HashMap<String, String> = HashMap::new();
 
-        if let Some(parent) = self.parent {
-            self.collect_libraries(parent, false, &mut paths, &mut seen);
-        }
-        self.collect_libraries(self.manifest, true, &mut paths, &mut seen);
-
-        // Add version JARs.
+        self.collect_libraries(&mut paths, &mut seen);
         self.add_version_jars(&mut paths);
 
         #[cfg(target_os = "windows")]
@@ -43,19 +34,18 @@ impl<'a> ClasspathResolver<'a> {
         return paths.join(":");
     }
 
-    fn collect_libraries(
-        &self,
-        manifest: &VersionManifest,
-        is_child: bool,
-        paths: &mut Vec<String>,
-        seen: &mut HashMap<String, String>,
-    ) {
-        for lib in &manifest.libraries {
+    fn collect_libraries(&self, paths: &mut Vec<String>, seen: &mut HashMap<String, String>) {
+        let libs = match &self.manifest.libraries {
+            Some(libs) => libs,
+            None => return,
+        };
+
+        for lib in libs {
             if !lib.should_include() {
                 continue;
             }
             if lib.is_native() {
-                debug!("Skipping native: {}", lib.name);
+                debug!("Skipping native JAR: {}", lib.name);
                 continue;
             }
 
@@ -71,12 +61,10 @@ impl<'a> ClasspathResolver<'a> {
             let key = maven_key(&lib.name);
 
             if let Some(existing) = seen.get(&key) {
-                if is_child {
-                    debug!("Conflict resolved (child wins): {key}");
-                    paths.retain(|p| p != existing);
-                    paths.push(path_str.clone());
-                    seen.insert(key, path_str);
-                }
+                debug!("Conflict resolved (last wins): {key}");
+                paths.retain(|p| p != existing);
+                paths.push(path_str.clone());
+                seen.insert(key, path_str);
             } else {
                 seen.insert(key, path_str.clone());
                 paths.push(path_str);
@@ -86,44 +74,23 @@ impl<'a> ClasspathResolver<'a> {
 
     fn add_version_jars(&self, paths: &mut Vec<String>) {
         let loader = Loader::from_version_id(&self.manifest.id_raw);
-
-        let resolved_id = self
-            .parent
-            .map(|p| p.id_raw.as_str())
-            .unwrap_or(&self.manifest.id_raw);
-
-        let client_jar = self
-            .lib_dir
-            .parent() // shared_dir
-            .unwrap_or(Path::new("."))
-            .join("versions")
-            .join(resolved_id)
-            .join(format!("{resolved_id}.jar"));
-
-        let version_jar = self
-            .lib_dir
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("versions")
-            .join(&self.manifest.id_raw)
-            .join(format!("{}.jar", self.manifest.id_raw));
-
+        // Para Forge y NeoForge, no añadimos el version_jar al classpath porque ya estará en el module path.
         match loader {
-            Loader::Forge(_) => {
-                self.push_if_exists(paths, &client_jar);
-                self.push_if_exists(paths, &version_jar);
+            Loader::Forge(_) | Loader::NeoForge(_) => {
+                // Solo añadir el forge universal si existe, pero no el version_jar
                 if let Some(forge_jar) = self.find_forge_universal() {
                     self.push_if_exists(paths, &forge_jar);
                 }
             }
-            Loader::NeoForge(_) => {
-                self.push_if_exists(paths, &version_jar);
-            }
             _ => {
-                self.push_if_exists(paths, &client_jar);
-                if client_jar != version_jar {
-                    self.push_if_exists(paths, &version_jar);
-                }
+                let version_jar = self
+                    .lib_dir
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join("versions")
+                    .join(self.base_id)
+                    .join(format!("{}.jar", self.base_id));
+                self.push_if_exists(paths, &version_jar);
             }
         }
     }
@@ -135,48 +102,50 @@ impl<'a> ClasspathResolver<'a> {
                 debug!("Adding JAR: {s}");
                 paths.push(s);
             }
+        } else {
+            debug!("Version JAR not found: {}", p.display());
         }
     }
 
     fn find_forge_universal(&self) -> Option<PathBuf> {
-        let check = |manifest: &VersionManifest| -> Option<PathBuf> {
-            manifest.libraries.iter().find_map(|lib| {
-                if lib.name.contains("net.minecraftforge:forge:")
-                    || lib.name.contains("net.minecraftforge:minecraftforge:")
-                {
-                    let parts: Vec<&str> = lib.name.splitn(3, ':').collect();
-                    if parts.len() < 3 {
-                        return None;
-                    }
-                    let group_path = parts[0].replace('.', "/");
-                    let artifact = parts[1];
-                    let version = parts[2];
-
-                    let universal = self
-                        .lib_dir
-                        .join(&group_path)
-                        .join(artifact)
-                        .join(version)
-                        .join(format!("{artifact}-{version}-universal.jar"));
-
-                    if universal.exists() {
-                        return Some(universal);
-                    }
-
-                    Some(
-                        self.lib_dir
-                            .join(group_path)
-                            .join(artifact)
-                            .join(version)
-                            .join(format!("{artifact}-{version}.jar")),
-                    )
-                } else {
-                    None
-                }
-            })
+        let libs = match &self.manifest.libraries {
+            Some(libs) => libs,
+            None => return None,
         };
+        for lib in libs {
+            let name = &lib.name;
+            if name.contains("net.minecraftforge:forge:")
+                || name.contains("net.minecraftforge:minecraftforge:")
+            {
+                let parts: Vec<&str> = name.splitn(3, ':').collect();
+                if parts.len() < 3 {
+                    continue;
+                }
+                let group_path = parts[0].replace('.', "/");
+                let artifact = parts[1];
+                let version = parts[2];
 
-        check(self.manifest).or_else(|| self.parent.and_then(check))
+                let universal = self
+                    .lib_dir
+                    .join(&group_path)
+                    .join(artifact)
+                    .join(version)
+                    .join(format!("{artifact}-{version}-universal.jar"));
+                if universal.exists() {
+                    return Some(universal);
+                }
+                let normal = self
+                    .lib_dir
+                    .join(group_path)
+                    .join(artifact)
+                    .join(version)
+                    .join(format!("{artifact}-{version}.jar"));
+                if normal.exists() {
+                    return Some(normal);
+                }
+            }
+        }
+        None
     }
 }
 

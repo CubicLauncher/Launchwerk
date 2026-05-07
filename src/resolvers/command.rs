@@ -31,9 +31,40 @@ impl<'a> CommandBuilder<'a> {
             config,
         }
     }
-    pub fn verify_requirements(&self) -> Result<(), Error> {
+
+    /// Resuelve la herencia y retorna (manifest_final, base_id)
+    fn resolve_manifest(&self) -> Result<(VersionManifest, String), Error> {
+        let mut current = self.manifest.clone();
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(current.id_raw.clone());
+        let mut base_id = current.id_raw.clone();
+
+        while let Some(parent_id) = current.inherits_from.clone() {
+            if !seen.insert(parent_id.clone()) {
+                return Err(Error::VersionLoad(format!(
+                    "Circular inheritance detected: {}",
+                    parent_id
+                )));
+            }
+            let parent_path = self
+                .shared_dir
+                .join("versions")
+                .join(&parent_id)
+                .join(format!("{}.json", parent_id));
+            let parent_manifest = VersionManifest::from_file(parent_path)?;
+            current = current.resolve(&parent_manifest);
+            base_id = parent_id;
+        }
+        Ok((current, base_id))
+    }
+
+    pub fn verify_requirements(
+        &self,
+        final_manifest: &VersionManifest,
+        base_id: &str,
+    ) -> Result<(), Error> {
         let lib_dir = self.shared_dir.join("libraries");
-        let classpath = ClasspathResolver::new(self.manifest, None, &lib_dir).build();
+        let classpath = final_manifest.get_classpath(&lib_dir);
 
         let java_path = &self.config.java_path;
         if !java_path.exists() {
@@ -68,8 +99,8 @@ impl<'a> CommandBuilder<'a> {
         let version_jar = self
             .shared_dir
             .join("versions")
-            .join(&self.manifest.id_raw)
-            .join(format!("{}.jar", self.manifest.id_raw));
+            .join(base_id)
+            .join(format!("{}.jar", base_id));
         if !version_jar.exists() {
             return Err(Error::MissingFile(format!(
                 "Version JAR not found: {}",
@@ -84,7 +115,7 @@ impl<'a> CommandBuilder<'a> {
             )));
         }
 
-        let natives_dir = self.shared_dir.join("natives").join(&self.manifest.id_raw);
+        let natives_dir = self.shared_dir.join("natives").join(base_id);
         if !natives_dir.exists() {
             std::fs::create_dir_all(&natives_dir)?;
         }
@@ -106,28 +137,44 @@ impl<'a> CommandBuilder<'a> {
     }
 
     pub fn build(&self) -> Result<Vec<String>, Error> {
+        let (final_manifest, base_id) = self.resolve_manifest()?;
+
         let lib_dir = self.shared_dir.join("libraries");
         let assets_dir = self.shared_dir.join("assets");
-        let natives_dir = self.shared_dir.join("natives").join(&self.manifest.id_raw);
+        let natives_dir = self.shared_dir.join("natives").join(&base_id);
 
-        let classpath = ClasspathResolver::new(self.manifest, None, &lib_dir).build();
+        let classpath = ClasspathResolver::new(&final_manifest, &base_id, &lib_dir).build();
         if classpath.is_empty() {
             return Err(Error::EmptyClasspath);
         }
-        self.verify_requirements()?;
+        self.verify_requirements(&final_manifest, &base_id)?;
 
         let uuid = Uuid::new_v4().to_string();
-        let vars = self.build_vars(&assets_dir, &natives_dir, &uuid, &classpath);
+        let vars = self.build_vars(
+            &assets_dir,
+            &natives_dir,
+            &uuid,
+            &classpath,
+            &final_manifest,
+        );
 
         let mut cmd: Vec<String> = Vec::new();
         let java = self.config.java_path.to_string_lossy().to_string();
         cmd.push(java);
-        self.add_jvm_flags(&mut cmd, &natives_dir, &vars);
+
+        self.add_jvm_flags(&mut cmd, &natives_dir, &vars, &final_manifest);
         cmd.push("-cp".to_string());
         cmd.push(classpath);
-        cmd.push(self.manifest.main_class.clone());
-        self.add_game_args(&mut cmd, &vars);
-        self.add_default_game_args(&mut cmd, &assets_dir);
+        cmd.push(
+            final_manifest
+                .main_class
+                .as_ref()
+                .ok_or(Error::MainClassNotFound)?
+                .clone(),
+        );
+
+        self.add_game_args(&mut cmd, &vars, &final_manifest);
+        self.add_default_game_args(&mut cmd, &assets_dir, &final_manifest);
         self.add_optional_args(&mut cmd);
         self.cleanup_unresolved(&mut cmd);
 
@@ -139,7 +186,9 @@ impl<'a> CommandBuilder<'a> {
         cmd: &mut Vec<String>,
         natives_dir: &Path,
         vars: &HashMap<String, String>,
+        manifest: &VersionManifest,
     ) {
+        // Flags fijos
         cmd.push(format!("-Djava.library.path={}", natives_dir.display()));
         cmd.push("-Dminecraft.launcher.brand=CubicLauncher".to_string());
         cmd.push("-Dminecraft.launcher.version=2.0".to_string());
@@ -155,52 +204,38 @@ impl<'a> CommandBuilder<'a> {
         cmd.push(format!("-Xms{}", self.config.min_ram));
         cmd.push(format!("-Xmx{}", self.config.max_ram));
 
-        if let Some(args) = self
-            .manifest
-            .arguments
-            .as_ref()
-            .and_then(|a| a.jvm.as_ref())
-        {
-            let mut skip_next = false;
+        // Argumentos JVM del manifiesto
+        if let Some(args) = manifest.arguments.as_ref().and_then(|a| a.jvm.as_ref()) {
             for arg in args {
                 let tokens = arg.get_if_applies();
-
-                let has_cp = tokens
-                    .iter()
-                    .any(|t| t == "-cp" || t.contains("${classpath}"));
-                if has_cp {
+                // Saltamos el par "-cp" y su valor (lo añadimos aparte)
+                if tokens.len() == 2 && tokens[0] == "-cp" {
                     continue;
                 }
-
-                for s in tokens {
-                    if skip_next {
-                        skip_next = false;
+                // Si algún token contiene "${classpath}", saltamos todo el argumento
+                if tokens.iter().any(|t| t.contains("${classpath}")) {
+                    continue;
+                }
+                // Añadir todos los tokens tras reemplazar variables
+                for token in tokens {
+                    let resolved = replace_vars(&token, vars);
+                    // Evitar duplicados del classpath (por si acaso)
+                    if resolved == "-cp" || resolved.contains("${classpath}") {
                         continue;
                     }
-                    if s == "-cp" {
-                        skip_next = true;
-                        continue;
-                    }
-                    let s = replace_vars(&s, vars);
-
-                    if s == "-cp" || s.contains("${classpath}") {
-                        continue;
-                    }
-                    if !cmd.contains(&s) {
-                        cmd.push(s);
-                    }
+                    cmd.push(resolved);
                 }
             }
         }
     }
 
-    fn add_game_args(&self, cmd: &mut Vec<String>, vars: &HashMap<String, String>) {
-        if let Some(args) = self
-            .manifest
-            .arguments
-            .as_ref()
-            .and_then(|a| a.game.as_ref())
-        {
+    fn add_game_args(
+        &self,
+        cmd: &mut Vec<String>,
+        vars: &HashMap<String, String>,
+        manifest: &VersionManifest,
+    ) {
+        if let Some(args) = manifest.arguments.as_ref().and_then(|a| a.game.as_ref()) {
             for arg in args {
                 if let Argument::Plain(s) = arg {
                     if self.should_skip_arg(s) {
@@ -215,8 +250,7 @@ impl<'a> CommandBuilder<'a> {
             }
             return;
         }
-
-        if let Some(legacy) = &self.manifest.minecraft_arguments {
+        if let Some(legacy) = &manifest.minecraft_arguments {
             for token in legacy.split_whitespace() {
                 cmd.push(replace_vars(token, vars));
             }
@@ -240,14 +274,25 @@ impl<'a> CommandBuilder<'a> {
         false
     }
 
-    fn add_default_game_args(&self, cmd: &mut Vec<String>, assets_dir: &Path) {
+    fn add_default_game_args(
+        &self,
+        cmd: &mut Vec<String>,
+        assets_dir: &Path,
+        manifest: &VersionManifest,
+    ) {
         let defaults: &[(&str, &dyn Fn() -> String)] = &[
             ("--width", &|| self.config.width.to_string()),
             ("--height", &|| self.config.height.to_string()),
             ("--username", &|| self.config.username.clone()),
-            ("--version", &|| self.manifest.id_raw.clone()),
+            ("--version", &|| manifest.id_raw.clone()),
             ("--assetsDir", &|| assets_dir.display().to_string()),
-            ("--assetIndex", &|| self.manifest.asset_index.id.clone()),
+            ("--assetIndex", &|| {
+                manifest
+                    .asset_index
+                    .as_ref()
+                    .map(|a| a.id.clone())
+                    .unwrap_or_default()
+            }),
             ("--gameDir", &|| self.instance_dir.display().to_string()),
             ("--accessToken", &|| "0".to_string()),
             ("--userType", &|| "legacy".to_string()),
@@ -268,7 +313,6 @@ impl<'a> CommandBuilder<'a> {
         if self.config.demo_mode && !cmd.contains(&"--demo".to_string()) {
             cmd.push("--demo".to_string());
         }
-
         if let Some(qp) = &self.config.quick_play {
             let (flag, value) = match qp {
                 QuickPlay::Singleplayer(v) => ("--quickPlaySingleplayer", v),
@@ -282,19 +326,17 @@ impl<'a> CommandBuilder<'a> {
         }
     }
 
-    // ── Utilities ─────────────────────────────────────────────────────────────
-
     fn build_vars(
         &self,
         assets_dir: &Path,
         natives_dir: &Path,
         uuid: &str,
         classpath: &str,
+        manifest: &VersionManifest,
     ) -> HashMap<String, String> {
         let mut vars = HashMap::new();
-
         vars.insert("auth_player_name".into(), self.config.username.clone());
-        vars.insert("version_name".into(), self.manifest.id_raw.clone());
+        vars.insert("version_name".into(), manifest.id_raw.clone());
         vars.insert(
             "game_directory".into(),
             self.instance_dir.display().to_string(),
@@ -302,7 +344,11 @@ impl<'a> CommandBuilder<'a> {
         vars.insert("assets_root".into(), assets_dir.display().to_string());
         vars.insert(
             "assets_index_name".into(),
-            self.manifest.asset_index.id.clone(),
+            manifest
+                .asset_index
+                .as_ref()
+                .map(|a| a.id.clone())
+                .unwrap_or_default(),
         );
         vars.insert("auth_uuid".into(), uuid.to_string());
         vars.insert("auth_access_token".into(), "0".into());

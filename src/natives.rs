@@ -1,9 +1,6 @@
 // Copyright (C) 2025 Santiagolxx, CubicLauncher contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Extracts native libraries (.so / .dll / .dylib) from their JAR files
-//! into the per-version natives directory before launching.
-
 use crate::error::Error;
 use crate::models::VersionManifest;
 use log::{debug, info, warn};
@@ -18,17 +15,27 @@ pub fn extract_natives(
 ) -> Result<(), Error> {
     fs::create_dir_all(natives_dir)?;
 
-    for lib in &manifest.libraries {
+    let Some(libraries) = &manifest.libraries else {
+        return Ok(());
+    };
+
+    for lib in libraries {
         if !lib.should_include() {
             continue;
         }
+
         let native_artifact = match lib.native_artifact() {
             Some(art) => art,
             None => {
                 if lib.is_native() {
                     let jar_path = lib_dir.join(lib.get_path());
                     if jar_path.exists() {
-                        extract_jar(&jar_path, natives_dir)?;
+                        let subdir = get_native_subdir(&lib.name);
+                        let target_dir = natives_dir.join(subdir);
+                        fs::create_dir_all(&target_dir)?;
+                        extract_jar(&jar_path, &target_dir)?;
+                    } else {
+                        warn!("Legacy native JAR not found: {}", jar_path.display());
                     }
                 }
                 continue;
@@ -40,10 +47,30 @@ pub fn extract_natives(
             warn!("Native JAR not found, skipping: {}", jar_path.display());
             continue;
         }
-        extract_jar(&jar_path, natives_dir)?;
+
+        let subdir = get_native_subdir(&lib.name);
+        let target_dir = natives_dir.join(subdir);
+        fs::create_dir_all(&target_dir)?;
+        extract_jar(&jar_path, &target_dir)?;
     }
     Ok(())
 }
+
+fn get_native_subdir(lib_name: &str) -> &'static str {
+    let name_lower = lib_name.to_lowercase();
+    if name_lower.contains("lwjgl") {
+        "lwjgl"
+    } else if name_lower.contains("netty") {
+        "netty"
+    } else if name_lower.contains("jna") || name_lower.contains("java-objc-bridge") {
+        "java"
+    } else if name_lower.contains("jtracy") {
+        "java"
+    } else {
+        ""
+    }
+}
+
 fn extract_jar(jar_path: &Path, dest_dir: &Path) -> Result<(), Error> {
     let file = fs::File::open(jar_path)?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| {
@@ -80,14 +107,14 @@ fn extract_jar(jar_path: &Path, dest_dir: &Path) -> Result<(), Error> {
         let out_path = dest_dir.join(&file_name);
 
         if out_path.exists() && out_path.metadata().map(|m| m.len()).unwrap_or(0) == entry.size() {
-            debug!("Native already extracted: {file_name}");
+            debug!("Native already extracted: {}", out_path.display());
             continue;
         }
 
         let mut buf = Vec::with_capacity(entry.size() as usize);
         entry.read_to_end(&mut buf)?;
         fs::write(&out_path, &buf)?;
-        info!("Extracted native: {file_name} → {}", dest_dir.display());
+        info!("Extracted native: {} -> {}", file_name, dest_dir.display());
     }
 
     Ok(())
@@ -102,13 +129,14 @@ fn is_native_file(name: &str) -> bool {
         || lower.ends_with(".dll")
         || lower.ends_with(".dylib")
         || lower.ends_with(".jnilib")
-        // versioned .so files like libawt.so.1
         || lower.contains(".so.")
 }
 
 pub fn list_native_jars(manifest: &VersionManifest, lib_dir: &Path) -> Vec<PathBuf> {
-    manifest
-        .libraries
+    let Some(libraries) = &manifest.libraries else {
+        return vec![];
+    };
+    libraries
         .iter()
         .filter(|l| l.should_include() && l.is_native())
         .map(|l| lib_dir.join(l.get_path()))
