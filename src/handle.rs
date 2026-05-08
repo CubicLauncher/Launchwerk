@@ -7,9 +7,10 @@ use crate::models::{Loader, VersionManifest};
 use crate::resolvers::CommandBuilder;
 use log::{debug, info, warn};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use uuid::Uuid;
 
@@ -150,7 +151,7 @@ impl InstanceHandle {
 
         // ── Store child ───────────────────────────────────────────────────
         {
-            let mut rt = inner.runtime.lock().unwrap();
+            let mut rt = self.inner.runtime.lock().await;
             rt.process = Some(child);
         }
 
@@ -161,7 +162,7 @@ impl InstanceHandle {
     /// Wait for the running process to exit and return its exit code.
     /// Returns `None` if the instance was never launched.
     pub async fn wait(&self) -> Option<i32> {
-        let mut rt = self.inner.runtime.lock().unwrap();
+        let mut rt = self.inner.runtime.lock().await;
         if let Some(child) = rt.process.as_mut() {
             match child.wait().await {
                 Ok(status) => {
@@ -185,7 +186,7 @@ impl InstanceHandle {
 
     /// Send SIGKILL / TerminateProcess to the running instance.
     pub async fn kill(&self) -> Result<(), Error> {
-        let mut rt = self.inner.runtime.lock().unwrap();
+        let mut rt = self.inner.runtime.lock().await;
         if let Some(child) = rt.process.as_mut() {
             child.kill().await?;
         }
