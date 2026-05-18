@@ -27,6 +27,12 @@ pub struct LaunchConfig {
     pub env: HashMap<String, String>,
     /// Optional Quick Play target.
     pub quick_play: Option<QuickPlay>,
+    /// Minecraft access token (real token for premium users, "0" for offline).
+    pub access_token: Option<String>,
+    /// Player UUID (real UUID for premium users, random for offline).
+    pub auth_uuid: Option<String>,
+    /// User type ("mojang" for Mojang accounts, "msa" for Microsoft, "legacy" for offline).
+    pub user_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +55,9 @@ impl Default for LaunchConfig {
             demo_mode: false,
             env: HashMap::new(),
             quick_play: None,
+            access_token: None,
+            auth_uuid: None,
+            user_type: None,
         }
     }
 }
@@ -100,6 +109,18 @@ impl LaunchConfigBuilder {
     }
     pub fn quick_play(mut self, qp: QuickPlay) -> Self {
         self.0.quick_play = Some(qp);
+        self
+    }
+    pub fn access_token(mut self, t: impl Into<String>) -> Self {
+        self.0.access_token = Some(t.into());
+        self
+    }
+    pub fn auth_uuid(mut self, u: impl Into<String>) -> Self {
+        self.0.auth_uuid = Some(u.into());
+        self
+    }
+    pub fn user_type(mut self, t: impl Into<String>) -> Self {
+        self.0.user_type = Some(t.into());
         self
     }
     pub fn build(self) -> LaunchConfig {

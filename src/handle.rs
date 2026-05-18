@@ -122,7 +122,6 @@ impl InstanceHandle {
         for (k, v) in &config.env {
             cmd.env(k, v);
         }
-        eprintln!("{:#?}", cmd);
         let mut child = cmd.spawn()?;
 
         // ── Pump stdout ───────────────────────────────────────────────────

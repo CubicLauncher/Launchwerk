@@ -149,7 +149,11 @@ impl<'a> CommandBuilder<'a> {
         }
         self.verify_requirements(&final_manifest, &base_id)?;
 
-        let uuid = Uuid::new_v4().to_string();
+        let uuid = self
+            .config
+            .auth_uuid
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         let vars = self.build_vars(
             &assets_dir,
             &natives_dir,
@@ -294,8 +298,18 @@ impl<'a> CommandBuilder<'a> {
                     .unwrap_or_default()
             }),
             ("--gameDir", &|| self.instance_dir.display().to_string()),
-            ("--accessToken", &|| "0".to_string()),
-            ("--userType", &|| "legacy".to_string()),
+            ("--accessToken", &|| {
+                self.config
+                    .access_token
+                    .clone()
+                    .unwrap_or_else(|| "0".to_string())
+            }),
+            ("--userType", &|| {
+                self.config
+                    .user_type
+                    .clone()
+                    .unwrap_or_else(|| "legacy".to_string())
+            }),
         ];
 
         for (flag, value_fn) in defaults {
@@ -351,8 +365,20 @@ impl<'a> CommandBuilder<'a> {
                 .unwrap_or_default(),
         );
         vars.insert("auth_uuid".into(), uuid.to_string());
-        vars.insert("auth_access_token".into(), "0".into());
-        vars.insert("user_type".into(), "legacy".into());
+        vars.insert(
+            "auth_access_token".into(),
+            self.config
+                .access_token
+                .clone()
+                .unwrap_or_else(|| "0".into()),
+        );
+        vars.insert(
+            "user_type".into(),
+            self.config
+                .user_type
+                .clone()
+                .unwrap_or_else(|| "legacy".into()),
+        );
         vars.insert("user_properties".into(), "{}".into());
         vars.insert("version_type".into(), "release".into());
         vars.insert(
